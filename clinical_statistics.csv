@@ -1,0 +1,34 @@
+﻿Clinical variable,Category,Number of patients
+Tumor stage,Stage I,2
+Tumor stage,Stage II,4
+Tumor stage,Stage III,49
+Tumor stage,Stage IV,17
+Tumor stage,Unknown,1
+Prior malignancy,No,5
+Prior malignancy,Unknown,65
+Prior malignancy,Yes,3
+AJCC pathologic T,T1,0
+AJCC pathologic T,T2,2
+AJCC pathologic T,T3,67
+AJCC pathologic T,T4,1
+AJCC pathologic T,Unknown,3
+AJCC pathologic N,N0,6
+AJCC pathologic N,N1,31
+AJCC pathologic N,N2,0
+AJCC pathologic N,Nx,0
+AJCC pathologic N,Unknown,36
+AJCC pathologic M,M0,17
+AJCC pathologic M,M1,40
+AJCC pathologic M,Mx,0
+AJCC pathologic M,Unknown,16
+Gender,Men,0
+Gender,Unknown,0
+Gender,Women,73
+Vital status,Alive,32
+Vital status,Dead,41
+Vital status,Unknown,0
+Age at index,<66,35
+Age at index,≥66,38
+New tumor event after initial treatment,No,4
+New tumor event after initial treatment,Unknown,66
+New tumor event after initial treatment,Yes,3

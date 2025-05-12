@@ -1,9 +1,8 @@
+# 导入必要的库
 from __future__ import print_function
 
 import numpy as np
-
 import argparse
-
 import torch
 import torch.nn as nn
 import pdb
@@ -24,15 +23,32 @@ from wsi_core.wsi_utils import sample_rois
 from utils.file_utils import save_hdf5
 from tqdm import tqdm
 
+# 设置命令行参数解析器
 parser = argparse.ArgumentParser(description='Heatmap inference script')
 parser.add_argument('--save_exp_code', type=str, default=None,
                     help='experiment code')
 parser.add_argument('--overlap', type=float, default=None)
 parser.add_argument('--config_file', type=str, default="heatmap_config_template.yaml")
 args = parser.parse_args()
+
+# 设置设备(GPU/CPU)
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def infer_single_slide(model, features, label, reverse_label_dict, k=1):
+    """
+    对单个切片进行推理
+    Args:
+        model: 训练好的模型
+        features: 特征向量
+        label: 标签
+        reverse_label_dict: 反向标签字典
+        k: top-k预测数
+    Returns:
+        ids: 预测的类别id
+        preds_str: 预测的类别名称
+        probs: 预测的概率
+        A: 注意力权重
+    """
     features = features.to(device)
     with torch.inference_mode():
         if isinstance(model, (CLAM_SB, CLAM_MB)):
@@ -58,6 +74,14 @@ def infer_single_slide(model, features, label, reverse_label_dict, k=1):
     return ids, preds_str, probs, A
 
 def load_params(df_entry, params):
+    """
+    从DataFrame加载参数
+    Args:
+        df_entry: DataFrame中的一行
+        params: 参数字典
+    Returns:
+        更新后的参数字典
+    """
     for key in params.keys():
         if key in df_entry.index:
             dtype = type(params[key])
@@ -74,6 +98,14 @@ def load_params(df_entry, params):
     return params
 
 def parse_config_dict(args, config_dict):
+    """
+    解析配置字典
+    Args:
+        args: 命令行参数
+        config_dict: 配置字典
+    Returns:
+        更新后的配置字典
+    """
     if args.save_exp_code is not None:
         config_dict['exp_arguments']['save_exp_code'] = args.save_exp_code
     if args.overlap is not None:
@@ -81,10 +113,12 @@ def parse_config_dict(args, config_dict):
     return config_dict
 
 if __name__ == '__main__':
+    # 加载配置文件
     config_path = os.path.join('heatmaps/configs', args.config_file)
     config_dict = yaml.safe_load(open(config_path, 'r'))
     config_dict = parse_config_dict(args, config_dict)
 
+    # 打印配置信息
     for key, value in config_dict.items():
         if isinstance(value, dict):
             print('\n'+key)
@@ -93,6 +127,7 @@ if __name__ == '__main__':
         else:
             print ('\n'+key + " : " + str(value))
             
+    # 确认是否继续执行
     decision = input('Continue? Y/N ')
     if decision in ['Y', 'y', 'Yes', 'yes']:
         pass
@@ -101,6 +136,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
+    # 解析各种参数
     args = config_dict
     patch_args = argparse.Namespace(**args['patching_arguments'])
     data_args = argparse.Namespace(**args['data_arguments'])
@@ -113,10 +149,12 @@ if __name__ == '__main__':
     heatmap_args = argparse.Namespace(**args['heatmap_arguments'])
     sample_args = argparse.Namespace(**args['sample_arguments'])
     
+    # 计算patch大小和步长
     patch_size = tuple([patch_args.patch_size for i in range(2)])
     step_size = tuple((np.array(patch_size) * (1 - patch_args.overlap)).astype(int))
     print('patch_size: {} x {}, with {:.2f} overlap, step size is {} x {}'.format(patch_size[0], patch_size[1], patch_args.overlap, step_size[0], step_size[1]))
 
+    # 设置默认参数
     preset = data_args.preset
     def_seg_params = {'seg_level': -1, 'sthresh': 15, 'mthresh': 11, 'close': 2, 'use_otsu': False, 
                       'keep_ids': 'none', 'exclude_ids':'none'}
@@ -124,6 +162,7 @@ if __name__ == '__main__':
     def_vis_params = {'vis_level': -1, 'line_thickness': 250}
     def_patch_params = {'use_padding': True, 'contour_fn': 'four_pt'}
 
+    # 如果有预设参数,从预设文件加载
     if preset is not None:
         preset_df = pd.read_csv(preset)
         for key in def_seg_params.keys():
@@ -138,7 +177,7 @@ if __name__ == '__main__':
         for key in def_patch_params.keys():
             def_patch_params[key] = preset_df.loc[0, key]
 
-
+    # 初始化待处理切片列表
     if data_args.process_list is None:
         if isinstance(data_args.data_dir, list):
             slides = []
@@ -153,12 +192,14 @@ if __name__ == '__main__':
         df = pd.read_csv(os.path.join('heatmaps/process_lists', data_args.process_list))
         df = initialize_df(df, def_seg_params, def_filter_params, def_vis_params, def_patch_params, use_heatmap_args=False)
 
+    # 获取需要处理的切片
     mask = df['process'] == 1
     process_stack = df[mask].reset_index(drop=True)
     total = len(process_stack)
     print('\nlist of slides to process: ')
     print(process_stack.head(len(process_stack)))
 
+    # 初始化模型
     print('\ninitializing model from checkpoint')
     ckpt_path = model_args.ckpt_path
     print('\nckpt path: {}'.format(ckpt_path))
@@ -168,22 +209,25 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
+    # 初始化特征提取器
     feature_extractor, img_transforms = get_encoder(encoder_args.model_name, target_img_size=encoder_args.target_img_size)
     _ = feature_extractor.eval()
     feature_extractor = feature_extractor.to(device)
     print('Done!')
 
+    # 设置标签字典
     label_dict =  data_args.label_dict
     class_labels = list(label_dict.keys())
     class_encodings = list(label_dict.values())
     reverse_label_dict = {class_encodings[i]: class_labels[i] for i in range(len(class_labels))} 
     
-
+    # 创建保存目录
     os.makedirs(exp_args.production_save_dir, exist_ok=True)
     os.makedirs(exp_args.raw_save_dir, exist_ok=True)
     blocky_wsi_kwargs = {'top_left': None, 'bot_right': None, 'patch_size': patch_size, 'step_size': patch_size, 
     'custom_downsample':patch_args.custom_downsample, 'level': patch_args.patch_level, 'use_center_shift': heatmap_args.use_center_shift}
 
+    # 对每个切片进行处理
     for i in tqdm(range(len(process_stack))):
         slide_name = process_stack.loc[i, 'slide_id']
         if data_args.slide_ext not in slide_name:
@@ -202,12 +246,14 @@ if __name__ == '__main__':
         else:
             grouping = label
 
+        # 创建保存目录
         p_slide_save_dir = os.path.join(exp_args.production_save_dir, exp_args.save_exp_code, str(grouping))
         os.makedirs(p_slide_save_dir, exist_ok=True)
 
         r_slide_save_dir = os.path.join(exp_args.raw_save_dir, exp_args.save_exp_code, str(grouping),  slide_id)
         os.makedirs(r_slide_save_dir, exist_ok=True)
 
+        # 设置ROI区域
         if heatmap_args.use_roi:
             x1, x2 = process_stack.loc[i, 'x1'], process_stack.loc[i, 'x2']
             y1, y2 = process_stack.loc[i, 'y1'], process_stack.loc[i, 'y2']
@@ -220,6 +266,7 @@ if __name__ == '__main__':
         print('slide id: ', slide_id)
         print('top left: ', top_left, ' bot right: ', bot_right)
 
+        # 获取切片路径
         if isinstance(data_args.data_dir, str):
             slide_path = os.path.join(data_args.data_dir, slide_name)
         elif isinstance(data_args.data_dir, dict):
@@ -230,7 +277,7 @@ if __name__ == '__main__':
 
         mask_file = os.path.join(r_slide_save_dir, slide_id+'_mask.pkl')
         
-        # Load segmentation and filter parameters
+        # 加载分割和过滤参数
         seg_params = def_seg_params.copy()
         filter_params = def_filter_params.copy()
         vis_params = def_vis_params.copy()
@@ -239,18 +286,21 @@ if __name__ == '__main__':
         filter_params = load_params(process_stack.loc[i], filter_params)
         vis_params = load_params(process_stack.loc[i], vis_params)
 
+        # 处理keep_ids参数
         keep_ids = str(seg_params['keep_ids'])
         if len(keep_ids) > 0 and keep_ids != 'none':
             seg_params['keep_ids'] = np.array(keep_ids.split(',')).astype(int)
         else:
             seg_params['keep_ids'] = []
 
+        # 处理exclude_ids参数
         exclude_ids = str(seg_params['exclude_ids'])
         if len(exclude_ids) > 0 and exclude_ids != 'none':
             seg_params['exclude_ids'] = np.array(exclude_ids.split(',')).astype(int)
         else:
             seg_params['exclude_ids'] = []
 
+        # 打印参数
         for key, val in seg_params.items():
             print('{}: {}'.format(key, val))
 
@@ -260,13 +310,14 @@ if __name__ == '__main__':
         for key, val in vis_params.items():
             print('{}: {}'.format(key, val))
         
+        # 初始化WSI对象
         print('Initializing WSI object')
         wsi_object = initialize_wsi(slide_path, seg_mask_path=mask_file, seg_params=seg_params, filter_params=filter_params)
         print('Done!')
 
         wsi_ref_downsample = wsi_object.level_downsamples[patch_args.patch_level]
 
-        # the actual patch size for heatmap visualization should be the patch size * downsample factor * custom downsample factor
+        # 计算热图可视化的实际patch大小
         vis_patch_size = tuple((np.array(patch_size) * np.array(wsi_ref_downsample) * patch_args.custom_downsample).astype(int))
 
         block_map_save_path = os.path.join(r_slide_save_dir, '{}_blockmap.h5'.format(slide_id))
@@ -280,8 +331,7 @@ if __name__ == '__main__':
         features_path = os.path.join(r_slide_save_dir, slide_id+'.pt')
         h5_path = os.path.join(r_slide_save_dir, slide_id+'.h5')
     
-
-        ##### check if h5_features_file exists ######
+        # 如果h5特征文件不存在,则计算特征
         if not os.path.isfile(h5_path) :
             _, _, wsi_object = compute_from_patches(wsi_object=wsi_object, 
                                             model=model, 
@@ -291,14 +341,14 @@ if __name__ == '__main__':
                                             attn_save_path=None, feat_save_path=h5_path, 
                                             ref_scores=None)				
         
-        ##### check if pt_features_file exists ######
+        # 如果pt特征文件不存在,则从h5文件转换
         if not os.path.isfile(features_path):
             file = h5py.File(h5_path, "r")
             features = torch.tensor(file['features'][:])
             torch.save(features, features_path)
             file.close()
 
-        # load features 
+        # 加载特征并进行推理
         features = torch.load(features_path)
         process_stack.loc[i, 'bag_size'] = len(features)
         
@@ -306,6 +356,7 @@ if __name__ == '__main__':
         Y_hats, Y_hats_str, Y_probs, A = infer_single_slide(model, features, label, reverse_label_dict, exp_args.n_classes)
         del features
         
+        # 保存block map
         if not os.path.isfile(block_map_save_path): 
             file = h5py.File(h5_path, "r")
             coords = file['coords'][:]
@@ -313,17 +364,19 @@ if __name__ == '__main__':
             asset_dict = {'attention_scores': A, 'coords': coords}
             block_map_save_path = save_hdf5(block_map_save_path, asset_dict, mode='w')
         
-        # save top 3 predictions
+        # 保存top-k预测结果
         for c in range(exp_args.n_classes):
             process_stack.loc[i, 'Pred_{}'.format(c)] = Y_hats_str[c]
             process_stack.loc[i, 'p_{}'.format(c)] = Y_probs[c]
 
+        # 保存处理结果
         os.makedirs('heatmaps/results/', exist_ok=True)
         if data_args.process_list is not None:
             process_stack.to_csv('heatmaps/results/{}.csv'.format(data_args.process_list.replace('.csv', '')), index=False)
         else:
             process_stack.to_csv('heatmaps/results/{}.csv'.format(exp_args.save_exp_code), index=False)
         
+        # 加载block map数据
         file = h5py.File(block_map_save_path, 'r')
         dset = file['attention_scores']
         coord_dset = file['coords']
@@ -331,6 +384,7 @@ if __name__ == '__main__':
         coords = coord_dset[:]
         file.close()
 
+        # 采样patch
         samples = sample_args.samples
         for sample in samples:
             if sample['sample']:
@@ -345,9 +399,11 @@ if __name__ == '__main__':
                     patch = wsi_object.wsi.read_region(tuple(s_coord), patch_args.patch_level, (patch_args.patch_size, patch_args.patch_size)).convert('RGB')
                     patch.save(os.path.join(sample_save_dir, '{}_{}_x_{}_y_{}_a_{:.3f}.png'.format(idx, slide_id, s_coord[0], s_coord[1], s_score)))
 
+        # 设置WSI参数
         wsi_kwargs = {'top_left': top_left, 'bot_right': bot_right, 'patch_size': patch_size, 'step_size': step_size, 
         'custom_downsample':patch_args.custom_downsample, 'level': patch_args.patch_level, 'use_center_shift': heatmap_args.use_center_shift}
 
+        # 生成热图
         heatmap_save_name = '{}_blockmap.tiff'.format(slide_id)
         if os.path.isfile(os.path.join(r_slide_save_dir, heatmap_save_name)):
             pass
@@ -360,11 +416,13 @@ if __name__ == '__main__':
 
         save_path = os.path.join(r_slide_save_dir, '{}_{}_roi_{}.h5'.format(slide_id, patch_args.overlap, heatmap_args.use_roi))
 
+        # 设置参考分数
         if heatmap_args.use_ref_scores:
             ref_scores = scores
         else:
             ref_scores = None
         
+        # 计算热图
         if heatmap_args.calc_heatmap:
             compute_from_patches(wsi_object=wsi_object, 
                                 img_transforms=img_transforms,
@@ -373,6 +431,7 @@ if __name__ == '__main__':
                                 batch_size=exp_args.batch_size, **wsi_kwargs, 
                                 attn_save_path=save_path,  ref_scores=ref_scores)
 
+        # 如果热图文件不存在
         if not os.path.isfile(save_path):
             print('heatmap {} not found'.format(save_path))
             if heatmap_args.use_roi:
@@ -382,6 +441,7 @@ if __name__ == '__main__':
             else:
                 continue
         
+        # 加载热图数据
         with h5py.File(save_path, 'r') as file:
             file = h5py.File(save_path, 'r')
             dset = file['attention_scores']
@@ -389,21 +449,24 @@ if __name__ == '__main__':
             scores = dset[:]
             coords = coord_dset[:]
 
+        # 设置热图可视化参数
         heatmap_vis_args = {'convert_to_percentiles': True, 'vis_level': heatmap_args.vis_level, 'blur': heatmap_args.blur, 'custom_downsample': heatmap_args.custom_downsample}
         if heatmap_args.use_ref_scores:
             heatmap_vis_args['convert_to_percentiles'] = False
 
+        # 生成热图文件名
         heatmap_save_name = '{}_{}_roi_{}_blur_{}_rs_{}_bc_{}_a_{}_l_{}_bi_{}_{}.{}'.format(slide_id, float(patch_args.overlap), int(heatmap_args.use_roi),
                                                                                         int(heatmap_args.blur), 
                                                                                         int(heatmap_args.use_ref_scores), int(heatmap_args.blank_canvas), 
                                                                                         float(heatmap_args.alpha), int(heatmap_args.vis_level), 
                                                                                         int(heatmap_args.binarize), float(heatmap_args.binary_thresh), heatmap_args.save_ext)
 
-
+        # 如果热图已存在则跳过
         if os.path.isfile(os.path.join(p_slide_save_dir, heatmap_save_name)):
             pass
         
         else:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+            # 绘制热图
             heatmap = drawHeatmap(scores, coords, slide_path, wsi_object=wsi_object,  
                                   cmap=heatmap_args.cmap, alpha=heatmap_args.alpha, **heatmap_vis_args, 
                                   binarize=heatmap_args.binarize, 
@@ -411,11 +474,13 @@ if __name__ == '__main__':
                                     thresh=heatmap_args.binary_thresh,  patch_size = vis_patch_size,
                                     overlap=patch_args.overlap, 
                                     top_left=top_left, bot_right = bot_right)
+            # 保存热图
             if heatmap_args.save_ext == 'jpg':
                 heatmap.save(os.path.join(p_slide_save_dir, heatmap_save_name), quality=100)
             else:
                 heatmap.save(os.path.join(p_slide_save_dir, heatmap_save_name))
         
+        # 保存原始图像
         if heatmap_args.save_orig:
             if heatmap_args.vis_level >= 0:
                 vis_level = heatmap_args.vis_level
@@ -431,7 +496,7 @@ if __name__ == '__main__':
                 else:
                     heatmap.save(os.path.join(p_slide_save_dir, heatmap_save_name))
 
+    # 保存配置文件
     with open(os.path.join(exp_args.raw_save_dir, exp_args.save_exp_code, 'config.yaml'), 'w') as outfile:
         yaml.dump(config_dict, outfile, default_flow_style=False)
-
 

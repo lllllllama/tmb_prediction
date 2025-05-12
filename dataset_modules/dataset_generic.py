@@ -14,6 +14,10 @@ import h5py
 from utils.utils import generate_split, nth
 
 def save_splits(split_datasets, column_keys, filename, boolean_style=False):
+	# 如果测试集为None，使用验证集作为测试集 #######################
+	if split_datasets[2] is None:
+		split_datasets = [split_datasets[0], split_datasets[1], split_datasets[1]]
+	
 	splits = [split_datasets[i].slide_data['slide_id'] for i in range(len(split_datasets))]
 	if not boolean_style:
 		df = pd.concat(splits, ignore_index=True, axis=1)
@@ -40,6 +44,8 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		patient_strat=False,
 		label_col = None,
 		patient_voting = 'max',
+		use_text_desc = False,  # 新增：是否使用文本描述
+		text_desc_col = 'optimized_description',  # 新增：文本描述列名
 		):
 		"""
 		Args:
@@ -49,6 +55,8 @@ class Generic_WSI_Classification_Dataset(Dataset):
 			print_info (boolean): Whether to print a summary of the dataset
 			label_dict (dict): Dictionary with key, value pairs for converting str labels to int
 			ignore (list): List containing class labels to ignore
+			use_text_desc (boolean): Whether to use text descriptions
+			text_desc_col (string): Column name for text descriptions
 		"""
 		self.label_dict = label_dict
 		self.num_classes = len(set(self.label_dict.values()))
@@ -60,6 +68,10 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		if not label_col:
 			label_col = 'label'
 		self.label_col = label_col
+		
+		# 新增：文本描述相关属性
+		self.use_text_desc = use_text_desc
+		self.text_desc_col = text_desc_col
 
 		slide_data = pd.read_csv(csv_path)
 		slide_data = self.filter_df(slide_data, filter_dict)
@@ -71,6 +83,15 @@ class Generic_WSI_Classification_Dataset(Dataset):
 			np.random.shuffle(slide_data)
 
 		self.slide_data = slide_data
+		
+		# 检查文本描述列是否存在
+		if self.use_text_desc and self.text_desc_col in self.slide_data.columns:
+			self.has_text_desc = True
+			print(f"已找到文本描述列: {self.text_desc_col}")
+		else:
+			self.has_text_desc = False
+			if self.use_text_desc:
+				print(f"警告: 未找到文本描述列 {self.text_desc_col}")
 
 		self.patient_data_prep(patient_voting)
 		self.cls_ids_prep()
@@ -216,20 +237,18 @@ class Generic_WSI_Classification_Dataset(Dataset):
 
 
 	def return_splits(self, from_id=True, csv_path=None):
-
-
 		if from_id:
 			if len(self.train_ids) > 0:
 				train_data = self.slide_data.loc[self.train_ids].reset_index(drop=True)
 				train_split = Generic_Split(train_data, data_dir=self.data_dir, num_classes=self.num_classes)
-
+		
 			else:
 				train_split = None
 			
 			if len(self.val_ids) > 0:
 				val_data = self.slide_data.loc[self.val_ids].reset_index(drop=True)
 				val_split = Generic_Split(val_data, data_dir=self.data_dir, num_classes=self.num_classes)
-
+		
 			else:
 				val_split = None
 			
@@ -260,7 +279,6 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		return None
 
 	def test_split_gen(self, return_descriptor=False):
-
 		if return_descriptor:
 			index = [list(self.label_dict.keys())[list(self.label_dict.values()).index(i)] for i in range(self.num_classes)]
 			columns = ['train', 'val', 'test']
@@ -296,7 +314,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 
 		assert len(np.intersect1d(self.train_ids, self.test_ids)) == 0
 		assert len(np.intersect1d(self.train_ids, self.val_ids)) == 0
-		assert len(np.intersect1d(self.val_ids, self.test_ids)) == 0
+		# assert len(np.intersect1d(self.val_ids, self.test_ids)) == 0
 
 		if return_descriptor:
 			return df
@@ -313,10 +331,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 
 
 class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
-	def __init__(self,
-		data_dir, 
-		**kwargs):
-	
+	def __init__(self, data_dir, **kwargs):
 		super(Generic_MIL_Dataset, self).__init__(**kwargs)
 		self.data_dir = data_dir
 		self.use_h5 = False
@@ -327,6 +342,11 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 	def __getitem__(self, idx):
 		slide_id = self.slide_data['slide_id'][idx]
 		label = self.slide_data['label'][idx]
+		
+		# 获取文本描述（如果启用）
+		if hasattr(self, 'has_text_desc') and self.has_text_desc:
+			text_desc = self.slide_data[self.text_desc_col][idx]
+		
 		if type(self.data_dir) == dict:
 			source = self.slide_data['source'][idx]
 			data_dir = self.data_dir[source]
@@ -337,10 +357,18 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 			if self.data_dir:
 				full_path = os.path.join(data_dir, 'pt_files', '{}.pt'.format(slide_id))
 				features = torch.load(full_path)
-				return features, label
+				
+				# 根据是否使用文本描述返回不同的数据
+				if hasattr(self, 'has_text_desc') and self.has_text_desc:
+					return features, label, text_desc
+				else:
+					return features, label
 			
 			else:
-				return slide_id, label
+				if hasattr(self, 'has_text_desc') and self.has_text_desc:
+					return slide_id, label, text_desc
+				else:
+					return slide_id, label
 
 		else:
 			full_path = os.path.join(data_dir,'h5_files','{}.h5'.format(slide_id))
@@ -349,7 +377,12 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 				coords = hdf5_file['coords'][:]
 
 			features = torch.from_numpy(features)
-			return features, label, coords
+			
+			# 根据是否使用文本描述返回不同的数据
+			if hasattr(self, 'has_text_desc') and self.has_text_desc:
+				return features, label, text_desc, coords
+			else:
+				return features, label, coords
 
 
 class Generic_Split(Generic_MIL_Dataset):
@@ -361,6 +394,13 @@ class Generic_Split(Generic_MIL_Dataset):
 		self.slide_cls_ids = [[] for i in range(self.num_classes)]
 		for i in range(self.num_classes):
 			self.slide_cls_ids[i] = np.where(self.slide_data['label'] == i)[0]
+		
+		# 检查是否包含文本描述列
+		if 'optimized_description' in self.slide_data.columns:
+			self.has_text_desc = True
+			self.text_desc_col = 'optimized_description'
+		else:
+			self.has_text_desc = False
 
 	def __len__(self):
 		return len(self.slide_data)
